@@ -11,6 +11,7 @@ from uaclient.entitlements.entitlement_status import (
 )
 from uaclient.security_status import (
     UpdateStatus,
+    create_updates_list,
     filter_updates,
     get_livepatch_fixed_cves,
     get_origin_for_installed_package,
@@ -118,19 +119,72 @@ class TestSecurityStatus:
             ),
         ),
     )
-    @mock.patch(M_PATH + "get_pkg_candidate_version", return_value="1.0")
     def test_get_update_status(
         self,
-        m_pkg_candidate_version,
         service_name,
         ua_info,
         version,
         expected_result,
     ):
+        candidate_versions = {version.parent_pkg.name: "1.0"}
         assert (
-            get_update_status(service_name, ua_info, version)
+            get_update_status(
+                service_name, ua_info, version, candidate_versions
+            )
             == expected_result
         )
+
+    @mock.patch(M_PATH + "get_pkg_candidate_versions")
+    def test_create_updates_list_looks_up_candidates_once(
+        self, m_pkg_candidate_versions
+    ):
+        """All candidates are looked up in one call, i.e. one apt cache open,
+        no matter how many updates or versions per package are pending."""
+        pkg1 = mock_package("pkg1", mock_version("1.0"))
+        pkg1_updates = [mock_version("1.{}".format(i)) for i in range(1, 6)]
+        for version in pkg1_updates:
+            version.parent_pkg = pkg1
+        pkg2 = mock_package("pkg2", mock_version("2.0"))
+        pkg2_update = mock_version("2.1")
+        pkg2_update.parent_pkg = pkg2
+
+        requested_pkg_names = []
+
+        def fake_get_pkg_candidate_versions(pkg_names):
+            requested_pkg_names.extend(pkg_names)
+            return {"pkg1": "1.5", "pkg2": "2.1"}
+
+        m_pkg_candidate_versions.side_effect = fake_get_pkg_candidate_versions
+
+        upgradable_versions = defaultdict(list)
+        upgradable_versions["standard-updates"] = [
+            (version, "archive.ubuntu.com") for version in pkg1_updates
+        ]
+        upgradable_versions["standard-security"] = [
+            (pkg2_update, "security.ubuntu.com")
+        ]
+        ua_info = {
+            "attached": False,
+            "enabled_services": [],
+            "entitled_services": [],
+        }
+
+        updates = create_updates_list(upgradable_versions, ua_info)
+
+        assert 1 == m_pkg_candidate_versions.call_count
+        assert {"pkg1", "pkg2"} == set(requested_pkg_names)
+        not_preferred = UpdateStatus.AVAILABLE_NOT_PREFERRED.value
+        assert [
+            ("pkg1", "1.1", not_preferred),
+            ("pkg1", "1.2", not_preferred),
+            ("pkg1", "1.3", not_preferred),
+            ("pkg1", "1.4", not_preferred),
+            ("pkg1", "1.5", UpdateStatus.AVAILABLE.value),
+            ("pkg2", "2.1", UpdateStatus.AVAILABLE.value),
+        ] == [
+            (update["package"], update["version"], update["status"])
+            for update in updates
+        ]
 
     @pytest.mark.parametrize("is_attached", (True, False))
     @mock.patch(M_PATH + "_is_attached")
@@ -544,10 +598,10 @@ class TestSecurityStatus:
     )
     @mock.patch(M_PATH + "filter_updates")
     @mock.patch(M_PATH + "get_apt_pkg_cache")
-    @mock.patch(M_PATH + "get_pkg_candidate_version", return_value=None)
+    @mock.patch(M_PATH + "get_pkg_candidate_versions")
     def test_security_status_dict(
         self,
-        m_pkg_candidate_version,
+        m_pkg_candidate_versions,
         m_cache,
         m_filter_sec_updates,
         _m_get_origin,
@@ -572,7 +626,9 @@ class TestSecurityStatus:
         m_package_list.append(m_package_2)
         m_cache.return_value.packages = m_package_list
 
-        m_pkg_candidate_version.return_value = "1.0"
+        m_pkg_candidate_versions.side_effect = lambda pkg_names: {
+            pkg_name: "1.0" for pkg_name in pkg_names
+        }
 
         m_filter_sec_updates.return_value = {
             "esm-infra": [

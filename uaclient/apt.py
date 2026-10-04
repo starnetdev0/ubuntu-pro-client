@@ -387,6 +387,36 @@ def get_pkg_candidate_version(
     return candidate_version
 
 
+def get_pkg_candidate_versions(
+    pkg_names: Iterable[str],
+) -> Dict[str, Optional[str]]:
+    """Return the candidate version of each package, keyed by package name.
+
+    Unlike calling get_pkg_candidate_version for each package, this opens the
+    apt cache only once, which matters when checking many packages.
+    """
+    pkg_names = set(pkg_names)
+    if not pkg_names:
+        return {}
+
+    candidate_versions = {}  # type: Dict[str, Optional[str]]
+    with PreserveAptCfg(get_apt_pkg_cache) as cache:
+        dep_cache = apt_pkg.DepCache(cache)
+        for pkg_name in pkg_names:
+            try:
+                package = cache[pkg_name]
+            except KeyError:
+                candidate_versions[pkg_name] = None
+                continue
+
+            candidate = dep_cache.get_candidate_ver(package)
+            candidate_versions[pkg_name] = (
+                candidate.ver_str if candidate else None
+            )
+
+    return candidate_versions
+
+
 def run_apt_update_command(
     override_env_vars: Optional[Dict[str, str]] = None
 ) -> str:

@@ -36,6 +36,7 @@ from uaclient.apt import (
     get_installed_packages_names,
     get_installed_packages_with_uninstalled_candidate_in_origin,
     get_pkg_candidate_version,
+    get_pkg_candidate_versions,
     get_remote_versions_for_package,
     get_system_sources_file,
     is_installed,
@@ -1481,6 +1482,37 @@ class TestGetPkgCandidateversion:
 
         actual_value = get_pkg_candidate_version("pkg1")
         assert actual_value is None
+
+
+class TestGetPkgCandidateVersions:
+    @mock.patch("uaclient.apt.apt_pkg.DepCache")
+    @mock.patch("uaclient.apt.get_apt_pkg_cache")
+    def test_get_pkg_candidate_versions(self, m_apt_cache, m_dep_cache):
+        m_pkg1 = mock.MagicMock()
+        m_pkg2 = mock.MagicMock()
+        m_apt_cache.return_value = {"pkg1": m_pkg1, "pkg2": m_pkg2}
+
+        def depcache_candidate(package):
+            if package == m_pkg1:
+                return mock.MagicMock(ver_str="1.2")
+            return None
+
+        m_dep_cache.return_value.get_candidate_ver = depcache_candidate
+
+        actual_value = get_pkg_candidate_versions(
+            ["pkg1", "pkg1", "pkg2", "not-in-cache"]
+        )
+        assert {
+            "pkg1": "1.2",
+            "pkg2": None,
+            "not-in-cache": None,
+        } == actual_value
+        assert 1 == m_apt_cache.call_count
+
+    @mock.patch("uaclient.apt.get_apt_pkg_cache")
+    def test_get_pkg_candidate_versions_without_packages(self, m_apt_cache):
+        assert {} == get_pkg_candidate_versions([])
+        assert 0 == m_apt_cache.call_count
 
 
 class TestGetInstalledPackagesByOrigin:

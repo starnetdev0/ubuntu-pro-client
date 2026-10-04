@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from functools import lru_cache
 from random import choice
-from typing import Any, DefaultDict, Dict, List, Tuple
+from typing import Any, DefaultDict, Dict, List, Optional, Tuple
 
 import apt_pkg  # type: ignore
 
@@ -17,7 +17,7 @@ from uaclient.apt import (
     get_apt_cache_datetime,
     get_apt_pkg_cache,
     get_esm_apt_pkg_cache,
-    get_pkg_candidate_version,
+    get_pkg_candidate_versions,
 )
 from uaclient.config import UAConfig
 from uaclient.entitlements import ESMAppsEntitlement, ESMInfraEntitlement
@@ -120,30 +120,25 @@ def get_origin_for_installed_package(
     return "third-party"
 
 
-@lru_cache(maxsize=None)
-def _is_candidate_version(pkg: str, version: str) -> bool:
-    """Returns True if the package version is a candidate version."""
-    candidate_version = get_pkg_candidate_version(pkg, check_esm_cache=False)
-    if candidate_version:
-        return version == candidate_version
-    return False
-
-
 def get_update_status(
     service_name: str,
     ua_info: Dict[str, Any],
     version: apt_pkg.Version,
+    candidate_versions: Dict[str, Optional[str]],
 ) -> str:
     """Defines the update status for a package based on the service name.
 
     For ESM-[Infra|Apps] packages, first checks if Pro is attached. If this is
     the case, also check for availability of the service.
+
+    candidate_versions maps package names to their apt candidate version, as
+    returned by get_pkg_candidate_versions.
     """
     if service_name in ("standard-security", "standard-updates") or (
         ua_info["attached"] and service_name in ua_info["enabled_services"]
     ):
-        is_candidate = _is_candidate_version(
-            version.parent_pkg.name, version.ver_str
+        is_candidate = (
+            candidate_versions.get(version.parent_pkg.name) == version.ver_str
         )
         return (
             UpdateStatus.AVAILABLE.value
@@ -283,9 +278,18 @@ def create_updates_list(
     ua_info: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
     updates = []
+    # Look up all candidate versions with a single apt cache open: opening
+    # it once per pending update takes minutes on hosts with many updates.
+    candidate_versions = get_pkg_candidate_versions(
+        version.parent_pkg.name
+        for version_list in upgradable_versions.values()
+        for version, _ in version_list
+    )
     for service, version_list in upgradable_versions.items():
         for version, origin in version_list:
-            status = get_update_status(service, ua_info, version)
+            status = get_update_status(
+                service, ua_info, version, candidate_versions
+            )
             updates.append(
                 {
                     "package": version.parent_pkg.name,
